@@ -1,0 +1,110 @@
+# .cursorrules — Event-Driven Status Tracker v2.1
+# These rules are IMMUTABLE for this project.
+# If any generation violates these rules, flag the violation before proceeding.
+
+## Language & Runtime
+- Python 3.11+ exclusively — use Python 3.11+ syntax features freely
+- Use `async def` for ALL FastAPI route handlers and dependency functions
+- Use `def` (sync) ONLY for pure, stateless business logic (processor.py)
+- Type hints are MANDATORY on every function signature — no untyped parameters ever
+
+## Framework Stack — No Substitutions Permitted
+- Web framework: FastAPI only (no Flask, no Django, no Starlette direct)
+- ASGI server: Uvicorn only (no gunicorn, no hypercorn)
+- Validation: Pydantic v2 BaseModel only (ConfigDict, not class Config)
+- Testing: pytest + FastAPI TestClient only
+- HTTP client (if needed): httpx only
+
+## Startup and Environment
+- ALWAYS call load_dotenv() as the FIRST executable statement in main.py,
+  before ANY os.environ.get() calls or logging.basicConfig() calls.
+  Without this, the .env file is entirely ignored by the process.
+- LOG_LEVEL MUST be read from os.environ, not hardcoded.
+- PRODUCTION_MODE MUST be read from os.environ.
+
+## Security Rules — Absolute, No Exceptions
+- Content-Type: application/json MUST be validated BEFORE HMAC computation.
+  Return HTTP 415 for non-JSON Content-Type — do NOT fall through to 422.
+- HMAC-SHA256 signature verification on EVERY POST /webhook request.
+- ALWAYS use hmac.compare_digest() — NEVER == or != for signature comparison.
+- ALWAYS extract raw request body bytes BEFORE any JSON parsing for HMAC.
+- WEBHOOK_SECRET loaded from os.environ ONLY — never hardcoded in source.
+- Return HTTP 401 immediately and unconditionally on ANY signature failure.
+- Return HTTP 415 immediately on Content-Type mismatch.
+- NEVER log the actual secret value, even partially.
+
+## Body Size Protection
+- BodySizeLimitMiddleware MUST be registered on the FastAPI app.
+- MAX_BODY_BYTES = 1_048_576 (1MB). Atlassian payloads are always < 50KB.
+- Middleware checks Content-Length header. Returns HTTP 413 if exceeded.
+- This must fire BEFORE the HMAC dependency runs.
+
+## Async Rules — Event Loop Protection
+- NEVER call blocking I/O directly in async route handlers.
+- ALL post-validation processing MUST go through FastAPI BackgroundTasks.
+- Route handlers MUST return HTTP 202 BEFORE the background task executes.
+- NEVER use asyncio.sleep() or time.sleep() in route handlers.
+
+## Background Task Tracking
+- ALWAYS wrap process_status_update() in _tracked_process_status_update().
+- _tracked_process_status_update() maintains _active_tasks_count via threading.Lock.
+- threading.Lock MUST be used — NOT asyncio.Lock — because background tasks
+  run in a thread pool executor, not the async event loop.
+- Lifespan shutdown polls _active_tasks_count for up to 10 seconds.
+
+## Idempotency
+- processor.py MUST check component_update.id and incident.id against
+  _seen_event_ids (thread-safe set with threading.Lock) before processing.
+- Cache is bounded at _DEDUP_CACHE_MAX = 500 entries (FIFO eviction).
+- If id is None (older Atlassian payload), skip dedup and process unconditionally.
+- Both requests in a duplicate pair MUST return HTTP 202 — dedup is transparent
+  at the HTTP layer. Only console output is suppressed for duplicates.
+
+## Validation Rules
+- ALL incoming JSON validated through Pydantic models before any processing.
+- Optional fields: use Optional[str] = None — never assume field presence.
+- Malformed payloads: HTTP 422 returned automatically by Pydantic.
+- Unknown fields: model_config = ConfigDict(extra='ignore') on ALL models.
+
+## MONITORED_KEYWORDS (Runtime-Configurable Filter)
+- MONITORED_PRODUCTS in processor.py MUST be loaded from the MONITORED_KEYWORDS
+  environment variable at module import time.
+- If MONITORED_KEYWORDS is absent or empty, use the hardcoded default list.
+- Changing the filter requires only an env var update and restart — no code change.
+- Non-matching components: silently drop in processor, always return HTTP 202.
+
+## Imports — Explicit and Complete
+- ALWAYS import Optional from typing when used in type annotations.
+- ALWAYS import ConfigDict from pydantic when using model_config.
+- No wildcard imports (from module import *).
+- No circular imports.
+
+## Logging — Production Standard
+- ALWAYS use Python standard logging module — never bare print() statements.
+- Log format: "%(message)s" at INFO level (message only, no extra prefixes).
+- ERROR level for security rejections.
+- DEBUG level for filtered-but-valid events and dedup discards.
+
+## Error Handling
+- FastAPI HTTPException with explicit status_code is the ONLY error mechanism.
+- Never swallow exceptions silently — log.error() at minimum before any exit path.
+- Fail-fast: validate at the boundary (the HTTP handler), never inside logic.
+
+## Testing Standards
+- EVERY route needs: happy-path, invalid-signature, missing-signature, bad content-type.
+- Use monkeypatch.setenv() for environment variable injection — never os.environ mutation.
+- Use generate_valid_signature() helper for all test payload signing.
+- Assert BOTH status_code AND response body content in every test.
+- Test helper MUST use json.dumps(payload, separators=(',', ':')) to match httpx encoding.
+- Dedup tests MUST reset _seen_event_ids and _seen_event_ids_order before execution.
+
+## Code Style
+- Max line length: 100 characters.
+- Docstrings on every function and class.
+- No unused imports — remove them.
+- Use f-strings for string formatting, not .format() or %.
+
+## Git Discipline
+- Commit after every atomic step that passes its tests.
+- NEVER commit .env files (ensured by .gitignore).
+- Tag releases: v1.0.0, v1.1.0, etc.

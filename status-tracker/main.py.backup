@@ -1,0 +1,95 @@
+import asyncio
+import logging
+import os
+from contextlib import asynccontextmanager
+from typing import Any
+
+from dotenv import load_dotenv
+from fastapi import BackgroundTasks, Depends, FastAPI
+from fastapi.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+
+# STEP 0: Load environment variables FIRST (per .cursorrules)
+load_dotenv()
+
+# Configure logging based on environment
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL, format="%(message)s")
+logger = logging.getLogger("status-tracker")
+
+# Read production mode (may affect future behavior)
+PRODUCTION_MODE = os.environ.get("PRODUCTION_MODE", "false").lower() in {"1", "true", "yes"}
+
+import processor  # noqa: E402  # after logging config
+from models import WebhookPayload  # noqa: E402
+from security import verify_hmac_signature  # noqa: E402
+
+
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject requests with Content-Length > 1MB (1_048_576 bytes) with HTTP 413."""
+
+    MAX_BODY_BYTES = 1_048_576
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                size = int(content_length)
+                if size > self.MAX_BODY_BYTES:
+                    logger.error("Request entity too large: %s bytes", size)
+                    return Response(status_code=413)
+            except ValueError:
+                # Malformed header, proceed but do not crash
+                logger.debug("Invalid Content-Length header: %s", content_length)
+        return await call_next(request)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan that waits for background tasks to drain for up to 10 seconds."""
+    yield
+    # Shutdown phase: wait for background tasks
+    timeout_sec = 10
+    interval = 0.1
+    waited = 0.0
+    while processor.get_active_tasks_count() > 0 and waited < timeout_sec:
+        await asyncio.sleep(interval)
+        waited += interval
+
+
+middleware = [Middleware(BodySizeLimitMiddleware)]
+app = FastAPI(middleware=middleware, lifespan=lifespan)
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Liveness probe endpoint for orchestration."""
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/webhook")
+async def webhook(
+    payload: WebhookPayload,
+    background_tasks: BackgroundTasks,
+    _: Any = Depends(verify_hmac_signature),
+) -> JSONResponse:
+    """
+    Webhook endpoint: verify security, acknowledge 202 immediately, process in background.
+    """
+    # Schedule background processing; must not block the event loop here
+    background_tasks.add_task(processor._tracked_process_status_update, payload)
+    return JSONResponse(status_code=202, content={"status": "accepted"})
+
+
+if __name__ == "__main__":  # pragma: no cover - manual run helper
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", "8080")),
+        log_level=LOG_LEVEL.lower(),
+        workers=1,
+    )

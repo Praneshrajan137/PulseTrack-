@@ -1,0 +1,42 @@
+# ── Environment secrets — NEVER commit these ─────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Python artifacts ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── pytest and coverage artifacts ─────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+*.xml
+coverage.json
+
+# ── IDE and editor files ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.orig
+
+# ── Docker override files (may contain local secrets) ─────────────────────────
+docker-compose.override.yml
+
+# ── macOS artifacts ───────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
